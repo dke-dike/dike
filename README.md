@@ -6,7 +6,7 @@ This repository contains the distributed PageRank implementation used to evaluat
 
 > **Abstract:** This paper addresses the partitioning problem of large-scale graphs in distributed environments. Existing count-based and degree-based approaches fail to guarantee workload balance in power-law graphs because each vertex incurs a different computational cost. We propose the *fairness score* to estimate per-vertex workload, and the *Degree-Aware Fairness Score (DAscore)* to achieve optimal workload balance even in power-law graphs. Dike assigns vertices sequentially using DAscore without global sorting or ID reordering, reducing partitioning overhead. Experimental results show that Dike effectively alleviates workload imbalance and achieves up to **77.8× faster execution** than existing partitioning methods.
 
-<img width="500" src="overview.png" alt="overview" />
+<img width="800" src="overview.png" alt="overview" />
 
 
 ## Project Structure
