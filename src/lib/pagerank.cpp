@@ -235,7 +235,8 @@ void Pagerank::create_vertex_weight(
         vector<double> vertex_weight;
         vertex_weight.reserve(num_vertex);
         double sum_weight = 0.0;
-        const double avg_deg = 40.0;
+        const double epsilon = 10.0;   // threshold degree ε (Table 3)
+        const double tau     = 5.0;    // transition steepness τ (Eq. 10)
 
         for (int i = 0; i < num_vertex; i++) {
             double w;
@@ -254,7 +255,7 @@ void Pagerank::create_vertex_weight(
                 // DEWP-Prime: sigmoid-gated power-law weight
                 double alpha    = stod(alpha1);
                 double n_diff   = pow((double)deg, alpha);
-                double sigmoid  = 1.0 / (1.0 + exp(-5.0 * (deg - avg_deg)));
+                double sigmoid = 1.0 / (1.0 + exp(-tau * (deg - epsilon)));
                 w = 1.0 + sqrt(n_diff) * sigmoid;
             } else {
                 // Adaptive two-tier strategy (default/cmd==6)
