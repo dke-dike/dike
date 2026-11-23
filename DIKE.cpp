@@ -104,13 +104,17 @@ int main(int argc, char** argv) {
     vector<int> num_outgoing;
     int num_of_vertex;
 
+    // Eq. (10) parameters: epsilon (threshold degree), tau (sigmoid steepness)
+    const double epsilon = (argc > 5) ? stod(argv[5]) : 10.0;
+    const double tau     = (argc > 6) ? stod(argv[6]) : 5.0;
+
     pagerank.create_vertex_weight(
         argv[1], argv[2],
         num_outgoing, num_of_vertex,
         start, end, nn,
         NUM_NODES, size, const_cast<string*>(NODE_IPS), my_ip, rank,
         displs, recvcounts, send, recv1,
-        argv[3], argv[4]
+        argv[3], argv[4], epsilon, tau
     );
     num_of_vertex = num_outgoing.size();
 
