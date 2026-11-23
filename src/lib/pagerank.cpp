@@ -146,7 +146,8 @@ void Pagerank::create_sliced_graph(string path, string del,
 
 // ── Vertex-weighted graph partitioning ────────────────────────────────────
 /**
- * Reads the full edge list to build out-degree counts, computes a
+ * Reads the full edge list to build out-degree counts (PageRank) and
+ * in-degree counts (partition weights d = in-degree), computes a
  * normalized vertex weight for the chosen partitioning strategy (cmd),
  * and assigns contiguous vertex ranges to each cluster node and MPI rank.
  *
@@ -156,9 +157,8 @@ void Pagerank::create_sliced_graph(string path, string del,
  *   3 - Log          (weight = log(degree + 1))
  *   4 - Equi-edge    (weight = degree + 1)
  *   5 - Log+e        (weight = log(degree + e))
- *   6 - Log+E        (weight = log(degree + E))  [unused alias]
- *   7 - DEWP-Prime   (sigmoid-weighted power law)
- *   default - Adaptive (two-tier sqrt with z-score)
+ *   7 - Dike         (DAscore, Eq. (10): 1 + sigma(tau*(d-eps)) * sqrt(d^alpha))
+ *   degree d = in-degree of the vertex (incoming edges are stored per node)
  */
 void Pagerank::create_vertex_weight(
     string path, string del,
@@ -168,29 +168,30 @@ void Pagerank::create_vertex_weight(
     string* node, string my_ip, int rank,
     int* displs, int* recvcounts,
     vector<double>* send, vector<double>* recv1,
-    string cmd, string alpha1)
+    string cmd, string alpha1,
+    double epsilon, double tau)
 {
     if (rank == 0) {
         const char* weight_names[] = {
             nullptr,
-            "EQUI-VERTEX",  // 1
-            "SQUARE ROOT",  // 2
-            "LOG",          // 3
-            "EQUI-EDGE",    // 4
-            "EQUI-EDGE",    // 5
-            "LOG + E",      // 6
-            "DEWP-PRIME"    // 7
+            "EQUI-VERTEX (EVP)",  // 1
+            "SQUARE ROOT",        // 2
+            "LOG",                // 3
+            "EQUI-EDGE (EEP)",    // 4
+            "LOG + e",            // 5
+            nullptr,              // 6 (removed)
+            "DIKE (DAscore)"      // 7
         };
         int cmd_i = stoi(cmd);
-        if (cmd_i >= 1 && cmd_i <= 7)
+        if (cmd_i >= 1 && cmd_i <= 7 && weight_names[cmd_i] != nullptr)
             cout << "[INFO] WEIGHT = " << weight_names[cmd_i] << endl;
         else {
-            cerr << "[ERROR] Invalid partitioning command (expected 1-7)" << endl;
+            cerr << "[ERROR] Invalid partitioning command (expected 1-5 or 7)" << endl;
             exit(1);
         }
     }
 
-    // ── Pass 1: build out-degree histogram ───────────────────────────────
+    // ── Pass 1: build out-degree (PageRank) and in-degree (partitioning) ───────────────────────────────
     ifstream infile(path.c_str());
     if (!infile.is_open()) {
         cerr << "[ERROR] Cannot open graph file: " << path << endl;
@@ -201,6 +202,7 @@ void Pagerank::create_vertex_weight(
     string line;
     size_t line_num = 0;
     int    num_vertex = 0;
+    vector<int> in_degree;   // in-degree d(v) used for partition weights
 
     while (getline(infile, line)) {
         size_t pos = line.find(delim_ch);
@@ -211,7 +213,9 @@ void Pagerank::create_vertex_weight(
 
         int mx = (int)max(from, to);
         if (num_vertex <= mx) num_vertex = mx + 1;
-        add_arc1(from, to, num_outgoing);
+        add_arc1(from, to, num_outgoing);   // out-degree: used by PageRank update
+        if (in_degree.size() <= (size_t)mx) in_degree.resize(mx + 1, 0);
+        in_degree[to]++;                    // in-degree: used by partitioning
 
         ++line_num;
         if (line_num % 50000000 == 0 && rank == 0)
@@ -231,20 +235,19 @@ void Pagerank::create_vertex_weight(
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    if (my_ip != "192.168.0.102") {  // Not a legacy coordinator address
+    {   // every node computes the same boundaries (coordinator needs end_arr too)
         vector<double> vertex_weight;
         vertex_weight.reserve(num_vertex);
         double sum_weight = 0.0;
-        const double epsilon = 10.0;   // threshold degree ε (Table 3)
-        const double tau     = 5.0;    // transition steepness τ (Eq. 10)
+        in_degree.resize(num_vertex, 0);
 
         for (int i = 0; i < num_vertex; i++) {
             double w;
-            int deg = num_outgoing[i];
+            int deg = in_degree[i];
             if (cmd == "1") {
                 w = 1.0;
             } else if (cmd == "2") {
-                w = (num_vertex == 2394385) ? sqrt(deg + 1.0) : sqrt(deg);
+                w = sqrt((double)deg);
             } else if (cmd == "3") {
                 w = log(deg + 1.0);
             } else if (cmd == "4") {
@@ -252,22 +255,14 @@ void Pagerank::create_vertex_weight(
             } else if (cmd == "5") {
                 w = log(deg + 2.71828);
             } else if (cmd == "7") {
-                // DEWP-Prime: sigmoid-gated power-law weight
+                // DAscore, Eq. (10): 1 + sigma(tau * (d - eps)) * sqrt(d^alpha)
                 double alpha    = stod(alpha1);
                 double n_diff   = pow((double)deg, alpha);
-                double sigmoid = 1.0 / (1.0 + exp(-tau * (deg - epsilon)));
+                double sigmoid  = 1.0 / (1.0 + exp(-tau * (deg - epsilon)));
                 w = 1.0 + sqrt(n_diff) * sigmoid;
             } else {
-                // Adaptive two-tier strategy (default/cmd==6)
-                const double AVG    = 14.2326;
-                const double THRESH = 127.0;
-                double z = deg - AVG;
-                if (deg <= (int)round(AVG))
-                    w = 1.0;
-                else if (deg <= THRESH)
-                    w = sqrt(deg);
-                else
-                    w = sqrt(deg + z);
+                cerr << "[ERROR] Unsupported partitioning command: " << cmd << endl;
+                exit(1);
             }
             vertex_weight.push_back(w);
             sum_weight += w;
@@ -282,11 +277,11 @@ void Pagerank::create_vertex_weight(
         size_t part_idx = 0;
         for (int i = 0; i < num_vertex; i++) {
             cumsum += vertex_weight[i];
-            if (cumsum >= inv_nodes) {
-                end_arr[part_idx] = i;
+            if (cumsum >= inv_nodes) {              // Algorithm 1, lines 13-15
+                end_arr[part_idx] = i + 1;          // v_i stays in current node
                 cumsum = 0.0;
                 if ((int)part_idx < num_of_node - 2)
-                    start_arr[part_idx + 1] = i;
+                    start_arr[part_idx + 1] = i + 1;
                 ++part_idx;
             }
             if ((int)part_idx == num_of_node - 2) break;
@@ -325,7 +320,7 @@ void Pagerank::create_vertex_weight(
             vector<double> proc_weight;
             double proc_sum = 0.0;
             for (int i = start; i < end; i++) {
-                double w = sqrt(num_outgoing[i]);
+                double w = sqrt((double)in_degree[i]);
                 proc_weight.push_back(w);
                 proc_sum += w;
             }
@@ -340,9 +335,9 @@ void Pagerank::create_vertex_weight(
             for (int i = start; i < end; i++) {
                 psum += proc_weight[i - start];
                 if (psum >= inv_size) {
-                    end_p[pidx] = i;
+                    end_p[pidx] = i + 1;
                     psum = 0.0;
-                    if ((int)pidx < size - 1) start_p[pidx + 1] = i;
+                    if ((int)pidx < size - 1) start_p[pidx + 1] = i + 1;
                     ++pidx;
                 }
                 if ((int)pidx == size - 1) break;
