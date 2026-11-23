@@ -4,7 +4,7 @@ Dike is a workload-balanced graph partitioning method for distributed graph proc
 
 This repository contains the distributed PageRank implementation used to evaluate Dike's partitioning quality under a **hybrid MPI + RDMA communication model**.
 
-> **Abstract:** This paper addresses the partitioning problem of large-scale graphs in distributed environments. Existing count-based and degree-based approaches fail to guarantee workload balance in power-law graphs because each vertex incurs a different computational cost. We propose the *fairness score* to estimate per-vertex workload, and the *Degree-Aware Fairness Score (DAscore)* to achieve optimal workload balance even in power-law graphs. Dike assigns vertices sequentially using DAscore without global sorting or ID reordering, reducing partitioning overhead. Experimental results show that Dike effectively alleviates workload imbalance and achieves up to **77.8× faster execution** than existing partitioning methods.
+> **Abstract:** This paper addresses the partitioning problem of large-scale graphs in distributed environments. Existing count-based and degree-based approaches fail to guarantee workload balance in power-law graphs because each vertex incurs a different computational cost. We propose the *fairness score* to estimate per-vertex workload, and the *Degree-Aware Fairness Score (DAscore)* to achieve balanced workload distribution even in power-law graphs. Dike assigns vertices sequentially using DAscore without global sorting or ID reordering, reducing partitioning overhead. Experimental results show that Dike effectively alleviates workload imbalance and reduces distributed algorithm execution time by up to 2.5× compared with existing partitioning criteria in the same execution environment, and up to 77.8× in a system-level comparison with Pregel and GraphX.
 
 <img width="800" src="overview.png" alt="overview" />
 
@@ -105,7 +105,7 @@ make -j$(nproc)
 
 ```bash
 mpirun -np <procs_per_node> --hostfile hosts ./pagerank \
-    <graph_file> <delimiter> <partition_strategy> <alpha>
+    <graph_file> <delimiter> <partition_strategy> <alpha> [epsilon] [tau]
 ```
 
 ### Arguments
@@ -115,7 +115,9 @@ mpirun -np <procs_per_node> --hostfile hosts ./pagerank \
 | `graph_file` | Path to edge list file (one directed edge per line) |
 | `delimiter` | Field separator: `" "` (space) or `"\t"` (tab) |
 | `partition_strategy` | Partitioning method (integer 1–7, see below) |
-| `alpha` | Power-law exponent for DAscore (used when `partition_strategy=7`) |
+| `alpha` | Growth parameter α of DAscore, 1 ≤ α < 2 (used when `partition_strategy=7`) |
+| `epsilon` | Threshold degree ε of DAscore (optional, default `10`) |
+| `tau` | Sigmoid steepness τ of DAscore (optional, default `5`) |
 
 ### Partition Strategies
 
@@ -126,16 +128,15 @@ mpirun -np <procs_per_node> --hostfile hosts ./pagerank \
 | `3` | Log | `w = log(degree + 1)` | Stronger skew reduction |
 | `4` | Equi-edge | `w = degree + 1` | Uniform edge count per node |
 | `5` | Log+e | `w = log(degree + e)` | Variant of Log |
-| `6` | Log+E | `w = log(degree + E)` | Adaptive variant |
-| `7` | **DAscore (Dike)** | `w = 1 + √(degree^α) × sigmoid(degree)` | **Proposed method** — degree-aware fairness score |
+| `7` | **DAscore (Dike)** | `w = 1 + σ(τ·(d − ε)) × √(d^α)` | **Proposed method** — degree-aware fairness score (Eq. 10) |
 
-Strategy `7` is the proposed Dike method. The `alpha` argument controls the sensitivity of DAscore to high-degree vertices.
+Strategy `7` is the proposed Dike method. In all strategies, `degree` (d) is the **in-degree** of a vertex, because each node stores the incoming edges of its assigned vertices (pull-based update). σ is the logistic function. The parameters used in the paper are ε = 10, τ = 5 and α = 1.0–1.3 (see Table 3 of the paper).
 
 ### Example
 
 ```bash
-# Run Dike (DAscore) with alpha=0.5, 2 MPI ranks per node
-mpirun -np 2 --hostfile hosts ./pagerank graph.txt " " 7 0.5
+# Run Dike (DAscore) with alpha=1.3, epsilon=10, tau=5, 2 MPI ranks per node
+mpirun -np 2 --hostfile hosts ./pagerank graph.txt " " 7 1.3 10 5
 
 # Run baseline equi-vertex partitioning
 mpirun -np 2 --hostfile hosts ./pagerank graph.txt " " 1 1.0
@@ -187,5 +188,3 @@ Per-step timing is also printed to stdout, allowing comparison of compute vs. co
 - The **coordinator node** (index 0 in `NODE_IPS`) performs no PageRank computation. It only aggregates and redistributes the PR vector over RDMA.
 - **Convergence** is detected on the coordinator by tracking the L1 diff of the PR vector across steps. The threshold is `1e-5`. `MAX_ITERATIONS` (default: 20) can be adjusted in `DIKE.cpp`.
 - **RoCE test** (`roce_test/`) is a standalone suite for validating RDMA connectivity over Ethernet before running the full experiment.
-
-
